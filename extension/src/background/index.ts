@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, type AppSettings } from '../shared/types.js';
-import type { TranslateRequest, TranslateResponse } from '../shared/types.js';
+import type { TranslateBatchResponse, TranslateRequest, TranslateResponse } from '../shared/types.js';
 import { normalizeUiLanguage } from '../shared/i18n.js';
 
 const STORAGE_KEY = 'manga_translator_settings';
@@ -141,6 +141,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       return;
     }
+
+    if (message.type === 'TRANSLATE_CHAPTER_BATCH') {
+      const { items, previousContextTexts } = message as {
+        type: string;
+        items: Array<{ id: string; body: TranslateRequest }>;
+        previousContextTexts?: string[][];
+      };
+      try {
+        sendResponse(await translateChapterBatch(items, previousContextTexts ?? []));
+      } catch (error) {
+        sendResponse({ error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
   })();
 
   return true;
@@ -231,6 +245,57 @@ interface TranslateResult {
   bubbles?: unknown[];
   processing_time_seconds?: number;
   error?: string;
+}
+
+async function translateChapterBatch(
+  items: Array<{ id: string; body: TranslateRequest }>,
+  previousContextTexts: string[][],
+): Promise<TranslateBatchResponse | { error: string }> {
+  if (items.length === 0) return { error: 'Empty chapter batch' };
+
+  const settings = await getSettings();
+  const endpoint = `${(settings.backendUrl || 'http://localhost:7677').replace(/\/$/, '')}/translate/batch`;
+  const first = items[0].body;
+  const payload = {
+    images: items.map(({ id, body }) => ({ id, image: body.image })),
+    input_language: first.input_language,
+    output_language: first.output_language,
+    provider: first.provider,
+    base_url: first.base_url,
+    model_name: first.model_name,
+    api_key: first.api_key,
+    temperature: first.temperature,
+    top_p: first.top_p,
+    top_k: first.top_k,
+    max_tokens: first.max_tokens,
+    translation_mode: first.translation_mode,
+    ocr_method: first.ocr_method,
+    reasoning_effort: first.reasoning_effort,
+    special_instructions: first.special_instructions,
+    font_dir: first.font_dir,
+    max_font_size: first.max_font_size,
+    min_font_size: first.min_font_size,
+    supersampling_factor: first.supersampling_factor,
+    send_full_page_context: false,
+    image_detail: first.image_detail,
+    outside_text_enabled: first.outside_text_enabled,
+    previous_context_texts: previousContextTexts.slice(-16),
+  };
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json() as { detail?: unknown };
+      if (body.detail) detail = String(body.detail);
+    } catch { /* ignore */ }
+    return { error: `Chapter batch failed: ${detail}` };
+  }
+  return await res.json() as TranslateBatchResponse;
 }
 
 async function fetchAndTranslate(imageUrl: string, pageUrl: string | undefined): Promise<TranslateResult> {

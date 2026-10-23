@@ -620,6 +620,13 @@ class ModelManager:
             from manga_ocr import MangaOcr
             from transformers import logging as transformers_logging
 
+            # Some CUDA-enabled PyTorch builds crash in the CUDA stream-capture
+            # probe when Windows falls back to CPU on an unsupported GPU driver.
+            # Transformers calls this probe during manga-ocr's initial dry run,
+            # even though no CUDA device is in use.
+            if self.device.type != "cuda":
+                torch.cuda.is_current_stream_capturing = lambda: False
+
             # Ensure model is downloaded
             model_path = self.load_manga_ocr(verbose=verbose)
 

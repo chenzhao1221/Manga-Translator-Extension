@@ -1,5 +1,5 @@
 import { DEFAULT_BACKEND_URL } from '../shared/constants.js';
-import type { AppSettings, TranslateRequest } from '../shared/types.js';
+import type { AppSettings, TranslateBatchResponse, TranslateRequest } from '../shared/types.js';
 import { normalizeUiLanguage, t, type UiLanguage } from '../shared/i18n.js';
 
 const ROOT_ID  = 'mt-scanner-root';
@@ -7,6 +7,7 @@ const STYLE_ID = 'mt-scanner-style';
 const STORAGE_KEY = 'manga_translator_settings';
 const TRANSLATED_CACHE_KEY = 'mt_translated_cache'; // rawUrl -> translated base64
 const TRANSLATED_CACHE_PREFIX = 'mt_translated_cache:';
+const AUTO_TRANSLATE_SITES_KEY = 'mt_auto_translate_sites';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Extension message listener
@@ -19,13 +20,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, send) => {
     return true;
   }
   if (msg.type === 'START_AUTO_TRANSLATE') {
-    void startAutoTranslate().then(() => send({ ok: true })).catch((e) => send({ ok: false, error: String(e) }));
+    void setAutoTranslateForCurrentSite(true)
+      .then(() => startAutoTranslate())
+      .then(() => send({ ok: true }))
+      .catch((e) => send({ ok: false, error: String(e) }));
     return true;
   }
   if (msg.type === 'STOP_AUTO_TRANSLATE') {
-    stopAutoTranslate();
-    send({ ok: true });
-    return false;
+    void setAutoTranslateForCurrentSite(false)
+      .then(() => { stopAutoTranslate(); send({ ok: true }); })
+      .catch((e) => send({ ok: false, error: String(e) }));
+    return true;
   }
   if (msg.type === 'GET_AUTO_TRANSLATE_STATUS') {
     send({ active: autoTranslateActive });
@@ -38,6 +43,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, send) => {
   }
   return false;
 });
+
+function currentSiteKey(): string {
+  return location.origin;
+}
+
+async function setAutoTranslateForCurrentSite(enabled: boolean): Promise<void> {
+  const stored = await chrome.storage.local.get(AUTO_TRANSLATE_SITES_KEY);
+  const sites = (stored[AUTO_TRANSLATE_SITES_KEY] ?? {}) as Record<string, boolean>;
+  const key = currentSiteKey();
+  if (enabled) sites[key] = true;
+  else delete sites[key];
+  await chrome.storage.local.set({ [AUTO_TRANSLATE_SITES_KEY]: sites });
+}
+
+async function restoreAutoTranslateForCurrentSite(): Promise<void> {
+  if (!/^https?:$/.test(location.protocol)) return;
+  const stored = await chrome.storage.local.get(AUTO_TRANSLATE_SITES_KEY);
+  const sites = (stored[AUTO_TRANSLATE_SITES_KEY] ?? {}) as Record<string, boolean>;
+  if (sites[currentSiteKey()]) await startAutoTranslate();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared scanner state
@@ -82,9 +107,9 @@ let autoTranslateQueue: Array<{ img: HTMLImageElement; url: string }> = [];
 let autoTranslateQueuedUrls = new Set<string>();
 let autoTranslateInFlightUrls = new Set<string>();
 let autoTranslateProcessing = false;
-let autoTranslateConcurrent = 0;
 let scannerPausedAutoTranslate = false;
-const AUTO_MAX_CONCURRENT = 1;
+let autoChapterPageCounter = 0;
+let autoChapterOcrHistory: string[][] = [];
 const AUTO_VIEWPORT_MARGIN_PX = 250;
 const AUTO_PREFETCH_PAGES = 3;
 const AUTO_SCAN_LIMIT = 250;
@@ -100,6 +125,8 @@ async function startAutoTranslate(): Promise<void> {
   if (autoTranslateActive) return;
   await refreshUiLanguage();
   autoTranslateActive = true;
+  autoChapterPageCounter = 0;
+  autoChapterOcrHistory = [];
   if (autoTranslateRemoveUiTimer !== undefined) {
     clearTimeout(autoTranslateRemoveUiTimer);
     autoTranslateRemoveUiTimer = undefined;
@@ -324,6 +351,70 @@ function stopAutoTranslate(preserveScannerResume = false): void {
 // Auto-translate: resolve manga image URL
 // ─────────────────────────────────────────────────────────────────────────────
 
+const AD_URL_RE = /(?:doubleclick|googlesyndication|googleadservices|adservice|adnxs|taboola|outbrain|criteo|amazon-adsystem|adform|advertising|popads|propellerads|trafficjunky)/i;
+const AD_HINT_RE = /(?:^|[\s_./-])(?:ad|ads|advert|advertisement|advertising|banner|sponsor|sponsored|promo|promotion)(?:$|[\s_./-])/i;
+
+function hasAdvertisingContext(img: HTMLImageElement, src: string): boolean {
+  if (AD_URL_RE.test(src) || AD_HINT_RE.test(src)) return true;
+
+  const ownHints = [
+    img.id,
+    img.className,
+    img.alt,
+    img.title,
+    img.getAttribute('aria-label') ?? '',
+    img.getAttribute('data-ad') ?? '',
+  ].join(' ');
+  if (AD_HINT_RE.test(ownHints)) return true;
+
+  let parent: HTMLElement | null = img.parentElement;
+  for (let depth = 0; parent && depth < 6; depth++, parent = parent.parentElement) {
+    if (parent.matches('ins.adsbygoogle, [data-ad], [data-ad-slot], [data-ad-client]')) return true;
+    const parentHints = [
+      parent.id,
+      parent.className,
+      parent.getAttribute('aria-label') ?? '',
+      parent.getAttribute('role') ?? '',
+    ].join(' ');
+    if (AD_HINT_RE.test(parentHints)) return true;
+  }
+
+  // A large clickable image that sends the reader to another site is normally
+  // a display ad. Manga page navigation almost always stays on the same host.
+  const link = img.closest<HTMLAnchorElement>('a[href]');
+  if (link) {
+    try {
+      const target = new URL(link.href, location.href);
+      if (target.protocol.startsWith('http') && target.hostname !== location.hostname) return true;
+    } catch {
+      // Ignore malformed links; the remaining checks still apply.
+    }
+  }
+
+  return false;
+}
+
+function hasMangaLikeLayout(img: HTMLImageElement): boolean {
+  const w = img.naturalWidth || Number(img.getAttribute('width')) || 0;
+  const h = img.naturalHeight || Number(img.getAttribute('height')) || 0;
+  const rect = img.getBoundingClientRect();
+
+  // Wait for lazy-loaded images instead of sending an unknown placeholder.
+  if (w <= 0 || h <= 0) return false;
+
+  // Keep normal pages, long webtoon strips and double-page spreads, while
+  // dropping icons, thumbnails, horizontal banners and narrow side ads.
+  if (w < 250 || h < 250 || w * h < 180_000) return false;
+  const aspect = w / h;
+  if (aspect > 2.6 || aspect < 0.12) return false;
+
+  const minRenderedWidth = Math.min(320, Math.max(220, window.innerWidth * 0.28));
+  if (rect.width > 0 && rect.width < minRenderedWidth) return false;
+  if (rect.height > 0 && rect.height < 180) return false;
+
+  return true;
+}
+
 function resolveMangaUrl(img: HTMLImageElement): string | null {
   const existingRaw = img.getAttribute('data-mt-raw');
   if (existingRaw && !existingRaw.startsWith('data:') && !existingRaw.startsWith('blob:')) return existingRaw;
@@ -340,6 +431,8 @@ function resolveMangaUrl(img: HTMLImageElement): string | null {
 
   // Skip common non-manga images
   if (/avatar|icon|logo|btn|nav|header|footer|banner|placeholder|loading/i.test(src)) return null;
+  if (hasAdvertisingContext(img, src)) return null;
+  if (!hasMangaLikeLayout(img)) return null;
 
   return src;
 }
@@ -353,83 +446,109 @@ async function processAutoTranslateQueue(): Promise<void> {
   if (autoTranslateProcessing) return;
   autoTranslateProcessing = true;
 
-  while (autoTranslateQueue.length > 0 && autoTranslateConcurrent < AUTO_MAX_CONCURRENT) {
+  const batch: Array<{ img: HTMLImageElement; url: string }> = [];
+  while (autoTranslateQueue.length > 0 && batch.length < 4) {
     const item = autoTranslateQueue.shift();
     if (!item) break;
     autoTranslateQueuedUrls.delete(item.url);
     if (!autoTranslateActive) break;
 
-    // Skip if already being processed
     if (translatedCache.has(item.url)) {
       applyTranslatedImage(item.img, `data:image/png;base64,${translatedCache.get(item.url)!}`, item.url);
       if (isNearViewport(item.img)) queueAutoTranslateLookahead(item.img);
-      console.log('[MT] apply from cache:', item.url);
       continue;
     }
 
-    console.log('[MT] processing:', item.url);
     autoTranslateInFlightUrls.add(item.url);
-    autoTranslateConcurrent++;
-    void translateAndApply(item.img, item.url).finally(() => {
-      autoTranslateInFlightUrls.delete(item.url);
-      autoTranslateConcurrent--;
-      autoTranslateProcessing = false;
-      void processAutoTranslateQueue();
-    });
+    batch.push(item);
   }
 
-  autoTranslateProcessing = false;
+  try {
+    if (batch.length > 0) await translateChapterBatchAndApply(batch);
+  } finally {
+    for (const item of batch) autoTranslateInFlightUrls.delete(item.url);
+    autoTranslateProcessing = false;
+  }
+
+  if (autoTranslateActive && autoTranslateQueue.length > 0) {
+    void processAutoTranslateQueue();
+  }
 }
 
-async function translateAndApply(img: HTMLImageElement, url: string): Promise<void> {
-  console.log('[MT] translateAndApply start:', url);
-  if (!autoTranslateActive) { console.log('[MT] not active, returning'); return; }
-
-  // Check retry count
-  const retries = AUTO_RETRY_MAP.get(url) ?? 0;
-  if (retries >= AUTO_RETRY_MAX) { console.log('[MT] max retries reached:', url); return; }
-
-  updateAutoTranslateCounter();
-
-  const pageUrl = window.location.href;
-  const imgData = await fetchImageData(url, pageUrl);
-  if (!autoTranslateActive) return;
-  if (!imgData) {
-    console.log('[MT] image data unavailable:', url);
-    AUTO_RETRY_MAP.set(url, retries + 1);
-    return;
-  }
-
+async function translateChapterBatchAndApply(
+  batch: Array<{ img: HTMLImageElement; url: string }>,
+): Promise<void> {
   const settings = await loadSettings();
-  const body = buildTranslateRequest(imgData, settings);
+  const pageUrl = window.location.href;
+  const prepared = (await Promise.all(batch.map(async (item) => {
+    const retries = AUTO_RETRY_MAP.get(item.url) ?? 0;
+    if (retries >= AUTO_RETRY_MAX) return null;
+    const image = await fetchImageData(item.url, pageUrl);
+    if (!image) {
+      AUTO_RETRY_MAP.set(item.url, retries + 1);
+      return null;
+    }
+    autoChapterPageCounter++;
+    return {
+      id: `P${String(autoChapterPageCounter).padStart(4, '0')}`,
+      item,
+      body: buildTranslateRequest(image, settings),
+    };
+  }))).filter((value): value is NonNullable<typeof value> => value !== null);
 
-  console.log('[MT] routing translated body through background:', url);
-  const result = await bgTranslateImageWithBody(url, pageUrl, body);
-  if (!autoTranslateActive) return;
-
-  if (result.error) {
-    console.log('[MT] bgTranslateImage error:', result.error);
-    AUTO_RETRY_MAP.set(url, retries + 1);
-    return;
-  }
-
-  if (!result.translated_image) {
-    console.log('[MT] no translated_image in result');
-    return;
-  }
-
-  const translatedB64 = result.translated_image;
-  const dataUrl = `data:image/png;base64,${translatedB64}`;
-
-  // Cache it
-  translatedCache.set(url, translatedB64);
-  await saveTranslatedCacheEntry(url, translatedB64);
-
-  // Apply to the image element on page
-  applyTranslatedImage(img, dataUrl, url);
-  if (isNearViewport(img)) queueAutoTranslateLookahead(img);
-  console.log('[MT] applied:', url);
+  if (prepared.length === 0 || !autoTranslateActive) return;
   updateAutoTranslateCounter();
+
+  // Return the first page as soon as it is ready. The remaining three pages
+  // continue as the background batch, so auto mode visibly starts within one
+  // page instead of appearing frozen until the whole four-page batch ends.
+  await submitPreparedChapterBatch(prepared.slice(0, 1));
+  if (prepared.length > 1 && autoTranslateActive) {
+    await submitPreparedChapterBatch(prepared.slice(1));
+  }
+  updateAutoTranslateCounter();
+}
+
+async function submitPreparedChapterBatch(
+  prepared: Array<{
+    id: string;
+    item: { img: HTMLImageElement; url: string };
+    body: TranslateRequest;
+  }>,
+): Promise<void> {
+  if (prepared.length === 0) return;
+  const response = await bgTranslateChapterBatch(
+    prepared.map(({ id, body }) => ({ id, body })),
+    autoChapterOcrHistory,
+  );
+  if ('error' in response) {
+    for (const { item } of prepared) {
+      AUTO_RETRY_MAP.set(item.url, (AUTO_RETRY_MAP.get(item.url) ?? 0) + 1);
+    }
+    console.log('[MT] chapter batch error:', response.error);
+    return;
+  }
+
+  const preparedById = new Map(prepared.map((entry) => [entry.id, entry]));
+  for (const result of response.results) {
+    if (!result.id) continue;
+    const entry = preparedById.get(result.id);
+    if (!entry) continue;
+    const { item } = entry;
+
+    autoChapterOcrHistory.push(result.ocr_texts ?? []);
+    if (result.error || !result.translated_image) {
+      AUTO_RETRY_MAP.set(item.url, (AUTO_RETRY_MAP.get(item.url) ?? 0) + 1);
+      continue;
+    }
+
+    const translatedB64 = result.translated_image;
+    translatedCache.set(item.url, translatedB64);
+    await saveTranslatedCacheEntry(item.url, translatedB64);
+    applyTranslatedImage(item.img, `data:image/png;base64,${translatedB64}`, item.url);
+    if (isNearViewport(item.img)) queueAutoTranslateLookahead(item.img);
+  }
+  autoChapterOcrHistory = autoChapterOcrHistory.slice(-16);
 }
 
 function applyTranslatedImage(img: HTMLImageElement, dataUrl: string, rawUrl?: string): void {
@@ -705,6 +824,27 @@ function bgTranslateImageWithBody(imageUrl: string, pageUrl: string, body: Trans
       }
       resolve((resp as { translated_image?: string; bubbles?: unknown[]; processing_time_seconds?: number; error?: string }) ?? { error: 'no response' });
     });
+  });
+}
+
+function bgTranslateChapterBatch(
+  items: Array<{ id: string; body: TranslateRequest }>,
+  previousContextTexts: string[][],
+): Promise<TranslateBatchResponse | { error: string }> {
+  return new Promise((resolve) => {
+    const tid = setTimeout(() => resolve({ error: 'Chapter batch timeout after 10 minutes' }), 600_000);
+    chrome.runtime.sendMessage(
+      { type: 'TRANSLATE_CHAPTER_BATCH', items, previousContextTexts },
+      (resp: unknown) => {
+        clearTimeout(tid);
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          resolve({ error: `extension error: ${lastError.message}` });
+          return;
+        }
+        resolve((resp as TranslateBatchResponse | { error: string }) ?? { error: 'no response' });
+      },
+    );
   });
 }
 
@@ -1298,7 +1438,7 @@ function getDefaultSettings(): AppSettings {
       maxFontSize: 16,
       minFontSize: 8,
       supersamplingFactor: 4,
-      sendFullPageContext: true,
+      sendFullPageContext: false,
       imageDetail: 'auto',
       outsideTextEnabled: false,
     },
@@ -1539,3 +1679,7 @@ function injectStyles(shadow: ShadowRoot): void {
   `;
   shadow.appendChild(s);
 }
+
+// Manifest-injected content scripts run again after navigation/reload. Restore
+// the per-site auto-translate preference without requiring the popup.
+void restoreAutoTranslateForCurrentSite();

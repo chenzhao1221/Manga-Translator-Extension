@@ -1040,67 +1040,9 @@ def translate_and_render(
                     verbose=verbose,
                 )
 
-                panels = None
-                debug_panels = None
-                if ENABLE_COMPONENT_ORDER_DEBUG:
-                    try:
-                        log_message(
-                            "Detecting panels for ordering debug...",
-                            verbose=verbose,
-                        )
-                        debug_panels = detect_panels(
-                            image_path,
-                            confidence=config.detection.panel_confidence,
-                            device=config.device,
-                            verbose=verbose,
-                        )
-                        if debug_panels:
-                            log_message(
-                                f"Detected {len(debug_panels)} panels",
-                                always_print=True,
-                            )
-                        else:
-                            log_message(
-                                "No panels detected",
-                                verbose=verbose,
-                            )
-                    except Exception as e:
-                        log_message(
-                            f"Panel detection failed: {e}. Using global sorting.",
-                            always_print=True,
-                        )
-                        debug_panels = None
-
-                    if config.detection.use_panel_sorting:
-                        panels = debug_panels
-                elif config.detection.use_panel_sorting:
-                    try:
-                        log_message(
-                            "Detecting panels for panel-aware sorting...",
-                            verbose=verbose,
-                        )
-                        panels = detect_panels(
-                            image_path,
-                            confidence=config.detection.panel_confidence,
-                            device=config.device,
-                            verbose=verbose,
-                        )
-                        if panels:
-                            log_message(
-                                f"Detected {len(panels)} panels for sorting",
-                                always_print=True,
-                            )
-                        else:
-                            log_message(
-                                "No panels detected, using global sorting",
-                                verbose=verbose,
-                            )
-                    except Exception as e:
-                        log_message(
-                            f"Panel detection failed: {e}. Using global sorting.",
-                            always_print=True,
-                        )
-                        panels = None
+                # Reuse the panel detection already performed before outside-
+                # text processing. The previous implementation ran the same
+                # CPU-heavy model twice for every page.
 
                 # Sort all text elements (speech bubbles + OSB text) by reading order
                 sorted_bubble_data = sort_bubbles_by_reading_order(
@@ -1240,25 +1182,68 @@ def translate_and_render(
                             )
                         except TranslationError as e:
                             error_str = str(e).lower()
-                            critical_tokens = (
-                                "429",
-                                "rate limit",
-                                "rate-limit",
-                                "auth",
-                                "unauthorized",
-                                "forbidden",
-                                "payment",
-                                "quota",
-                                "empty response",
-                                "api failed",
-                            )
-                            if any(token in error_str for token in critical_tokens):
-                                raise
+                            recovered_from_empty = False
+                            if "empty response" in error_str and len(bubble_images_b64) > 1:
+                                log_message(
+                                    "Empty batch response; isolating refused crops instead of failing the page.",
+                                    always_print=True,
+                                )
 
-                            log_message(f"Translation failed: {e}", always_print=True)
-                            translated_texts = [f"[Translation Error: {e}]"] * len(
-                                bubble_images_b64
-                            )
+                                def translate_range(start: int, end: int):
+                                    chunk_ocr_texts = []
+                                    try:
+                                        result = call_translation_api_batch(
+                                            config=config.translation,
+                                            images_b64=bubble_images_b64[start:end],
+                                            full_image_b64="",
+                                            mime_types=bubble_mime_types[start:end],
+                                            full_image_mime_type="image/jpeg",
+                                            bubble_metadata=sorted_bubble_data[start:end],
+                                            previous_context_images=[],
+                                            previous_context_texts=previous_context_texts,
+                                            ocr_texts_output=chunk_ocr_texts,
+                                            debug=verbose,
+                                        )
+                                        if ocr_texts_out is not None:
+                                            ocr_texts_out.extend(chunk_ocr_texts)
+                                        return result
+                                    except TranslationError as chunk_error:
+                                        if (
+                                            "empty response" in str(chunk_error).lower()
+                                            and end - start > 1
+                                        ):
+                                            mid = start + (end - start) // 2
+                                            return translate_range(start, mid) + translate_range(mid, end)
+                                        log_message(
+                                            f"Skipped refused crop {start + 1}: {chunk_error}",
+                                            always_print=True,
+                                        )
+                                        if ocr_texts_out is not None:
+                                            ocr_texts_out.extend(["[OCR FAILED]"] * (end - start))
+                                        return ["[OCR FAILED]"] * (end - start)
+
+                                translated_texts = translate_range(0, len(bubble_images_b64))
+                                recovered_from_empty = True
+
+                            if not recovered_from_empty:
+                                critical_tokens = (
+                                    "429",
+                                    "rate limit",
+                                    "rate-limit",
+                                    "auth",
+                                    "unauthorized",
+                                    "forbidden",
+                                    "payment",
+                                    "quota",
+                                    "api failed",
+                                )
+                                if any(token in error_str for token in critical_tokens):
+                                    raise
+
+                                log_message(f"Translation failed: {e}", always_print=True)
+                                translated_texts = [f"[Translation Error: {e}]"] * len(
+                                    bubble_images_b64
+                                )
                         except Exception as e:
                             log_message(
                                 f"Translation API error: {e}", always_print=True

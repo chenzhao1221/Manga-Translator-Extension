@@ -67,7 +67,21 @@ def _build_system_prompt_ocr(
     input_language: Optional[str],
     reading_direction: str,
 ) -> str:
-    lang_label = f"{input_language} " if input_language else ""
+    normalized_language = (input_language or "").strip().lower()
+    auto_detect_language = normalized_language in {
+        "",
+        "auto",
+        "auto-detect",
+        "automatic",
+    }
+    lang_label = "" if auto_detect_language else f"{input_language} "
+    language_rule = (
+        "- **Language Detection:** Detect the source language independently for "
+        "each image. Transcribe all original text in its original script; mixed "
+        "languages are allowed."
+        if auto_detect_language
+        else f"- **Language Focus:** Transcribe only the original {lang_label}text."
+    )
     direction = (
         "right-to-left"
         if (reading_direction or "rtl").lower() == "rtl"
@@ -85,7 +99,7 @@ Your sole purpose is to accurately transcribe the original text from a series of
 - **Reading Context:** The image crops are presented in a {direction} reading order. Do not reorder them.
 - **Transcription Policy:** Preserve all original punctuation, ellipses, and casing. Collapse multi-line text into a single line, separated by a single space.
 - **Ignore Policy:** Ignore all non-text visual elements (borders, tails, watermarks, etc.).
-- **Language Focus:** Transcribe only the original {lang_label}text.
+{language_rule}
 - **Ruby/Furigana Policy:** If small phonetic characters (ruby/furigana) are present, you must ignore them and transcribe only the main, larger base text.
 - **Visual Emphasis Policy:** If the source text is visually emphasized (bold, slanted, etc.), you must mirror that emphasis in your transcription using markdown-style markers: `*italic*` for slanted text, `**bold**` for bold text, `***bold-italic***` for both.
 - **Quotes:** Do not wrap the transcribed text in quotation marks unless they are explicitly present in the image.
@@ -1846,13 +1860,29 @@ def prepare_bubble_images_for_translation(
 
         bubble_image_cv = original_cv_image[y1:y2, x1:x2].copy()
 
+        # Data minimization: when segmentation is available, remove every
+        # pixel outside the detected speech-bubble silhouette before the crop
+        # is encoded for a remote OCR/translation provider. This preserves the
+        # text and bubble while keeping surrounding page artwork local.
+        own_mask_crop = None
+        if _ma is not None and _ma.ndim == 2:
+            own_mask_crop = _ma[y1:y2, x1:x2] > 0
+            if own_mask_crop.shape == bubble_image_cv.shape[:2] and own_mask_crop.any():
+                bubble_image_cv[~own_mask_crop] = 255
+        else:
+            # Secondary detections sometimes provide only a rectangle. Reduce
+            # these crops to monochrome before transmission: this keeps
+            # outlined/colored narration text OCR-able while removing color
+            # information from the surrounding artwork.
+            gray_crop = cv2.cvtColor(bubble_image_cv, cv2.COLOR_BGR2GRAY)
+            _, binary_crop = cv2.threshold(
+                gray_crop, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            bubble_image_cv = cv2.cvtColor(binary_crop, cv2.COLOR_GRAY2BGR)
+
         # White-out conjoined neighbor text regions visible in this crop
         neighbor_bboxes = bubble.get("conjoined_neighbor_bboxes")
         if whiteout_conjoined_bubbles and neighbor_bboxes:
-            own_mask_crop = (
-                _ma[y1:y2, x1:x2] > 0 if (_ma is not None and _ma.ndim == 2) else None
-            )
-
             for nb in neighbor_bboxes:
                 nb_tuple = tuple(int(round(v)) for v in nb)
                 neighbor_mask = mask_lookup.get(nb_tuple)

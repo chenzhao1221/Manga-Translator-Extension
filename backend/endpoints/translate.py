@@ -1,6 +1,7 @@
 """FastAPI translation endpoints."""
 import asyncio
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
@@ -22,8 +23,11 @@ from config import settings
 
 router = APIRouter(prefix="", tags=["translate"])
 
-# Thread pool for batch processing
-_executor = ThreadPoolExecutor(max_workers=4)
+# Two workers is the best compromise for the bundled CPU-only runtime: it
+# overlaps remote API waits without running several YOLO passes at once.
+_executor = ThreadPoolExecutor(max_workers=2)
+_batch_warmup_lock = threading.Lock()
+_batch_models_warmed = False
 
 
 def _build_bubble_info(bubbles: list[dict]) -> list:
@@ -98,8 +102,10 @@ async def translate_single(req: TranslateRequest) -> TranslateResponse:
 
 
 def _translate_single_item(
-    item: TranslateBatchItem, req: TranslateBatchRequest
-) -> TranslateBatchItemResponse:
+    item: TranslateBatchItem,
+    req: TranslateBatchRequest,
+    previous_context_texts: list[list[str]],
+) -> tuple[TranslateBatchItemResponse, list[str]]:
     """Translate one item from a batch request (runs in thread pool)."""
     import time as t
 
@@ -134,21 +140,35 @@ def _translate_single_item(
             fonts_base_dir=fonts_dir,
         )
 
-        result_image, bubbles, _ = translate_image_base64(item.image, config)
+        captured_ocr_texts: list[str] = []
+        result_image, bubbles, _ = translate_image_base64(
+            item.image,
+            config,
+            previous_context_texts=previous_context_texts,
+            ocr_texts_out=captured_ocr_texts,
+        )
         translated_b64 = image_to_base64_raw(result_image)
-        return TranslateBatchItemResponse(
-            id=item.id,
-            translated_image=translated_b64,
-            bubbles=_build_bubble_info(bubbles),
-            processing_time_seconds=t.time() - item_start,
+        return (
+            TranslateBatchItemResponse(
+                id=item.id,
+                translated_image=translated_b64,
+                bubbles=_build_bubble_info(bubbles),
+                processing_time_seconds=t.time() - item_start,
+                ocr_texts=captured_ocr_texts,
+            ),
+            captured_ocr_texts,
         )
     except Exception as e:
-        return TranslateBatchItemResponse(
-            id=item.id,
-            translated_image=None,
-            bubbles=[],
-            error=str(e),
-            processing_time_seconds=t.time() - item_start,
+        return (
+            TranslateBatchItemResponse(
+                id=item.id,
+                translated_image=None,
+                bubbles=[],
+                error=str(e),
+                processing_time_seconds=t.time() - item_start,
+                ocr_texts=[],
+            ),
+            [],
         )
 
 
@@ -165,11 +185,46 @@ async def translate_batch(req: TranslateBatchRequest) -> TranslateBatchResponse:
         )
 
     start = time.time()
-    futures = [
-        _executor.submit(_translate_single_item, item, req)
-        for item in req.images
-    ]
-    results = [f.result() for f in futures]
+    global _batch_models_warmed
+
+    results: list[TranslateBatchItemResponse] = []
+    chapter_text_history = list(req.previous_context_texts)
+    start_index = 0
+
+    # Ultralytics performs one-time model fusion during the first inference.
+    # Warm up with one real page so two worker threads cannot race that mutable
+    # initialization path.
+    if not _batch_models_warmed and req.images:
+        with _batch_warmup_lock:
+            if not _batch_models_warmed:
+                warm_response, warm_ocr = _translate_single_item(
+                    req.images[0],
+                    req,
+                    chapter_text_history[-16:],
+                )
+                results.append(warm_response)
+                chapter_text_history.append(warm_ocr)
+                _batch_models_warmed = True
+                start_index = 1
+
+    # Work in two-page waves. Pages within a wave run together; the next wave
+    # receives the accumulated OCR transcript as chapter context.
+    for wave_start in range(start_index, len(req.images), 2):
+        wave = req.images[wave_start:wave_start + 2]
+        context_snapshot = chapter_text_history[-16:]
+        futures = [
+            _executor.submit(
+                _translate_single_item,
+                item,
+                req,
+                context_snapshot,
+            )
+            for item in wave
+        ]
+        wave_results = [future.result() for future in futures]
+        for response, ocr_texts in wave_results:
+            results.append(response)
+            chapter_text_history.append(ocr_texts)
 
     success_count = sum(1 for r in results if r.error is None)
     error_count = len(results) - success_count

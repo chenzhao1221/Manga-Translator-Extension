@@ -48,6 +48,7 @@ export interface TranslateBatchItemResponse {
   bubbles: BubbleInfo[];
   error?: string;
   processing_time_seconds?: number;
+  ocr_texts: string[];
 }
 
 export interface TranslateBatchResponse {
@@ -119,7 +120,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showBubbleBboxes: false,
   uiLanguage: 'en',
   config: {
-    inputLanguage: 'Japanese',
+    inputLanguage: 'Auto-detect',
     outputLanguage: 'English',
     provider: 'Google',
     temperature: 0.1,
@@ -130,7 +131,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     maxFontSize: 16,
     minFontSize: 8,
     supersamplingFactor: 4,
-    sendFullPageContext: true,
+    sendFullPageContext: false,
     imageDetail: 'auto',
     outsideTextEnabled: false,
   },
@@ -150,8 +151,21 @@ export const LANGUAGES = [
   'Ukrainian', 'Urdu', 'Uzbek', 'Vietnamese', 'Welsh',
 ] as const;
 
-export const SOURCE_LANGUAGES = ['Japanese', 'Korean', 'English', 'Vietnamese'] as const;
-export const TARGET_LANGUAGES = ['Japanese', 'Korean', 'English', 'Vietnamese'] as const;
+export const SOURCE_LANGUAGES = [
+  'Auto-detect',
+  'Japanese',
+  'Korean',
+  'English',
+  'Vietnamese',
+] as const;
+export const TARGET_LANGUAGES = [
+  'Japanese',
+  'Korean',
+  'Chinese (Simplified)',
+  'Chinese (Traditional)',
+  'English',
+  'Vietnamese',
+] as const;
 
 export const PROVIDERS = [
   'Google', 'OpenAI', 'Anthropic', 'xAI', 'DeepSeek',

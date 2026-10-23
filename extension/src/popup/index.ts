@@ -172,7 +172,10 @@ async function loadAndBind(): Promise<void> {
   tempVal.textContent = Number(settings.config.temperature).toFixed(2);
   topPVal.textContent = Number(settings.config.topP).toFixed(2);
   topKVal.textContent = String(settings.config.topK);
-  contextToggle.checked = settings.config.sendFullPageContext;
+  // Full-page upload is intentionally disabled. Only local bubble crops are
+  // sent to the configured translation provider.
+  contextToggle.checked = false;
+  contextToggle.disabled = true;
   instructionsInput.value = settings.config.specialInstructions ?? '';
 
   bind();
@@ -421,7 +424,7 @@ function collectAllSettings(): AppSettings {
       temperature: parseFloat(tempSlider.value),
       topP: parseFloat(topPSlider.value),
       topK: parseInt(topKSlider.value, 10),
-      sendFullPageContext: contextToggle.checked,
+      sendFullPageContext: false,
       outsideTextEnabled: outsideTextToggle.checked,
       specialInstructions: instructionsInput.value.trim() || undefined,
     },

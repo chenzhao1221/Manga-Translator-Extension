@@ -7,6 +7,8 @@
 
 Local manga page translation for Chromium-based browsers, powered by a FastAPI backend and a bundled MangaTranslator pipeline.
 
+This is a community-modified version of [lehuyqq/Manga-Translator-Extension](https://github.com/lehuyqq/Manga-Translator-Extension), based on its `v1.0.1` release. It is not an official release from the original extension author.
+
 [Tiếng Việt](docs/README.vi.md) · [中文](docs/README.zh.md)
 
 ## Highlights
@@ -118,4 +120,13 @@ Do not commit API keys, local backend URLs, generated caches, model artifacts, `
 
 ## License
 
-This portable build includes code derived from MangaTranslator. Keep upstream license requirements with any redistribution.
+### Origins and attribution
+
+- Browser extension and FastAPI integration: [lehuyqq/Manga-Translator-Extension](https://github.com/lehuyqq/Manga-Translator-Extension). The upstream repository does not currently contain an explicit license for that code. Its original authorship remains with its author; this repository does not claim to relicense it.
+- MangaTranslator backend core: [meangrinch/MangaTranslator](https://github.com/meangrinch/MangaTranslator), by grinnch, under Apache License 2.0. The license text is preserved in [backend/core/LICENSE](backend/core/LICENSE). Copyright and attribution notices in the source are retained.
+
+### Changes in this version
+
+The changes since the upstream extension's `v1.0.1` release include Simplified and Traditional Chinese targets, automatic source-language selection, DeepSeek image support, private text-region cropping, ad-image filtering, cross-page OCR context and batched translation, translation failure handling, and persistent per-site auto-translation after page reload. The backend was also adapted to run on CPU-only Windows systems. See the Git history for the exact changes.
+
+The Python runtime, downloaded model weights, generated browser build, caches, and personal API credentials are not part of this source repository. Their licenses and distribution terms must be checked separately before shipping binary release assets.

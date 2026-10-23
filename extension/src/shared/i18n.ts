@@ -39,7 +39,7 @@ const EN = {
   labelTemperature: 'Temperature',
   labelTopP: 'Top P',
   labelTopK: 'Top K',
-  labelFullPageContext: 'Full Page Context',
+  labelFullPageContext: 'Full-page upload (disabled by privacy mode)',
   labelSpecialInstructions: 'Special Instructions',
   labelOptional: '(optional)',
   placeholderInstructions: 'e.g. Keep honorifics, use casual tone...',
@@ -132,7 +132,7 @@ const MESSAGES: Record<UiLanguage, Record<MessageKey, string>> = {
     labelTemperature: 'Temperature',
     labelTopP: 'Top P',
     labelTopK: 'Top K',
-    labelFullPageContext: 'Ngữ cảnh toàn trang',
+    labelFullPageContext: 'Tải cả trang (bị tắt bởi chế độ riêng tư)',
     labelSpecialInstructions: 'Chỉ dẫn bổ sung',
     labelOptional: '(tùy chọn)',
     placeholderInstructions: 'ví dụ Giữ honorific, dùng giọng tự nhiên...',
@@ -220,7 +220,7 @@ const MESSAGES: Record<UiLanguage, Record<MessageKey, string>> = {
     labelTemperature: 'Temperature',
     labelTopP: 'Top P',
     labelTopK: 'Top K',
-    labelFullPageContext: '整页上下文',
+    labelFullPageContext: '整页上传（已被隐私模式禁用）',
     labelSpecialInstructions: '特殊指令',
     labelOptional: '（可选）',
     placeholderInstructions: '例如 保留敬称，使用自然语气...',
@@ -308,7 +308,7 @@ const MESSAGES: Record<UiLanguage, Record<MessageKey, string>> = {
     labelTemperature: 'Temperature',
     labelTopP: 'Top P',
     labelTopK: 'Top K',
-    labelFullPageContext: 'ページ全体の文脈',
+    labelFullPageContext: 'ページ全体の送信（プライバシーモードで無効）',
     labelSpecialInstructions: '追加指示',
     labelOptional: '（任意）',
     placeholderInstructions: '例: 敬称を残し、自然な口調にする...',
@@ -396,7 +396,7 @@ const MESSAGES: Record<UiLanguage, Record<MessageKey, string>> = {
     labelTemperature: 'Temperature',
     labelTopP: 'Top P',
     labelTopK: 'Top K',
-    labelFullPageContext: '전체 페이지 문맥',
+    labelFullPageContext: '전체 페이지 업로드(개인정보 모드에서 비활성화)',
     labelSpecialInstructions: '추가 지시',
     labelOptional: '(선택)',
     placeholderInstructions: '예: 호칭을 유지하고 자연스러운 말투 사용...',
@@ -457,6 +457,7 @@ const MESSAGES: Record<UiLanguage, Record<MessageKey, string>> = {
 
 const LANGUAGE_LABELS: Record<UiLanguage, Record<string, string>> = {
   en: {
+    'Auto-detect': 'Auto-detect',
     Japanese: 'Japanese',
     Korean: 'Korean',
     English: 'English',
@@ -465,6 +466,7 @@ const LANGUAGE_LABELS: Record<UiLanguage, Record<string, string>> = {
     'Chinese (Traditional)': 'Chinese (Traditional)',
   },
   vi: {
+    'Auto-detect': 'Tự động nhận diện',
     Japanese: 'Tiếng Nhật',
     Korean: 'Tiếng Hàn',
     English: 'Tiếng Anh',
@@ -473,6 +475,7 @@ const LANGUAGE_LABELS: Record<UiLanguage, Record<string, string>> = {
     'Chinese (Traditional)': 'Tiếng Trung (Phồn thể)',
   },
   zh: {
+    'Auto-detect': '自动识别',
     Japanese: '日语',
     Korean: '韩语',
     English: '英语',
@@ -481,6 +484,7 @@ const LANGUAGE_LABELS: Record<UiLanguage, Record<string, string>> = {
     'Chinese (Traditional)': '中文（繁体）',
   },
   ja: {
+    'Auto-detect': '自動検出',
     Japanese: '日本語',
     Korean: '韓国語',
     English: '英語',
@@ -489,6 +493,7 @@ const LANGUAGE_LABELS: Record<UiLanguage, Record<string, string>> = {
     'Chinese (Traditional)': '中国語（繁体字）',
   },
   ko: {
+    'Auto-detect': '자동 감지',
     Japanese: '일본어',
     Korean: '한국어',
     English: '영어',

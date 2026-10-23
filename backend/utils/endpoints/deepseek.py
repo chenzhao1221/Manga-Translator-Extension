@@ -21,12 +21,13 @@ def call_deepseek_endpoint(
 ) -> Optional[str]:
     """
     Calls the DeepSeek Chat Completions API endpoint with the provided data and handles retries.
-    DeepSeek uses OpenAI-compatible API format and is text-only (no image support).
+    DeepSeek uses the OpenAI-compatible content format. The ``deepseek-flash``
+    model accepts inline image inputs alongside text.
 
     Args:
         api_key (str): DeepSeek API key.
         model_name (str): DeepSeek model to use.
-        parts (List[Dict[str, Any]]): List of content parts (text only, images are ignored).
+        parts (List[Dict[str, Any]]): List of content parts (text and inline images).
         generation_config (Dict[str, Any]): Configuration for generation (temp, top_p, max_tokens,
             thinking, reasoning_effort).
         system_prompt (Optional[str]): System prompt for the conversation.
@@ -47,8 +48,8 @@ def call_deepseek_endpoint(
     if not api_key:
         raise ValidationError("API key is required for DeepSeek endpoint")
 
-    # DeepSeek is text-only, so we only extract text parts
     text_part = next((p for p in parts if "text" in p), None)
+    image_parts = [p for p in parts if "inline_data" in p]
     if not text_part:
         raise ValidationError(
             "Invalid 'parts' format for DeepSeek: No text prompt found."
@@ -65,7 +66,25 @@ def call_deepseek_endpoint(
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": text_part["text"]})
+
+    user_content = []
+    for part in image_parts:
+        inline_data = part.get("inline_data", {})
+        mime_type = inline_data.get("mime_type")
+        base64_image = inline_data.get("data")
+        if mime_type and base64_image:
+            user_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{base64_image}"
+                    },
+                }
+            )
+        else:
+            log_message(f"Invalid image part format: {part}", always_print=True)
+    user_content.append({"type": "text", "text": text_part["text"]})
+    messages.append({"role": "user", "content": user_content})
 
     payload = {
         "model": api_model_name,

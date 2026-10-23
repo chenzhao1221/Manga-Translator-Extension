@@ -212,7 +212,9 @@ def _build_config(
         reasoning_effort=reasoning_effort,
         special_instructions=special_instructions,
         ocr_method=ocr_method,
-        send_full_page_context=send_full_page_context,
+        # Privacy hardening: the page image stays local. The translation API
+        # receives only locally detected/cropped text regions.
+        send_full_page_context=False,
         whiteout_conjoined_bubbles=True,
         upscale_method="lanczos",
         bubble_min_side_pixels=96,
@@ -223,6 +225,7 @@ def _build_config(
         image_detail="high" if image_detail == "auto" else image_detail,
         enable_web_search=False,
         enable_code_execution=False,
+        previous_context_text_count=16,
     )
 
     # Inject API keys into the config's internal env map
@@ -372,6 +375,8 @@ def image_to_base64_raw(image: Image.Image, fmt: str = "PNG") -> str:
 def translate_image_base64(
     image_b64: str,
     config: MangaTranslatorConfig,
+    previous_context_texts: list[list[str]] | None = None,
+    ocr_texts_out: list[str] | None = None,
 ) -> tuple[Image.Image, list[dict[str, Any]], float]:
     """Translate a base64-encoded image using MangaTranslator pipeline.
 
@@ -410,6 +415,8 @@ def translate_image_base64(
             image_path=tmp_in_path,
             config=config,
             output_path=tmp_output_path,
+            previous_context_texts=previous_context_texts or [],
+            ocr_texts_out=ocr_texts_out,
         )
 
         if isinstance(result, Image.Image):
