@@ -5,22 +5,29 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688)
 ![Portable](https://img.shields.io/badge/Windows-portable-0078D4)
 
-Local manga page translation for Chromium-based browsers, powered by a FastAPI backend and a bundled MangaTranslator pipeline.
+Translate web manga as you read: detect the source language, process pages in order, and replace the images with translated versions without leaving the browser.
+
+I started adapting this project for my own reading—foreign-language manga, including adult-oriented web comics. The recurring annoyances were familiar: ads mixed into the page list, dialogue in a language I could not identify, long waits between images, and auto-translate forgetting its state after a reload. The goal is simple: spend less time operating the translator and more time reading the story.
 
 This is a community-modified version of [lehuyqq/Manga-Translator-Extension](https://github.com/lehuyqq/Manga-Translator-Extension), based on its `v1.0.1` release. It is not an official release from the original extension author.
 
 [Tiếng Việt](docs/README.vi.md) · [中文](docs/README.zh.md)
 
-## Highlights
+## What this version changes
 
-- Page scanner for manga/comic images with selectable batch translation.
-- Auto-translate mode that replaces images as you read.
-- Bubble text and outside-bubble text support, with lightweight cleanup by default.
-- Optional Flux Klein 4B inpainting can be downloaded later with `setup.bat`.
-- Source/target options for Japanese, Korean, English, and Vietnamese.
-- Extension UI languages: English by default, plus Vietnamese, Chinese, Japanese, and Korean.
-- OpenAI-compatible model picker plus Google, OpenAI, Anthropic, xAI, DeepSeek, Z.ai, Moonshot AI, and OpenRouter provider options.
-- Portable backend startup through `start-backend.bat` or `backend/main.py`.
+- **Read across languages:** source-language auto-detection works per text crop; target options now include Simplified and Traditional Chinese. Recognition and translation quality depend on the selected model.
+- **Keep reading after a reload:** auto-translate is remembered per site and resumes when its pages load again.
+- **Shorter visible waits:** automatic translation works in batches of up to four pages, displays the first page before the remaining pages finish, and passes prior OCR text as context. This is not a whole-chapter, single-request translation.
+- **Less collateral scanning:** the page scanner skips likely ads and images that do not resemble manga pages. See the ad-blocker recommendation below.
+- **Limit image exposure:** full-page upload to the translation provider is disabled; the backend sends detected text-region crops, masking the area outside a bubble when segmentation is available. Crops can still contain surrounding art and can still be rejected by a provider.
+- **Recover from partial refusals:** an empty translation response can be split into smaller crop batches so one problematic region does not necessarily fail the entire page.
+- **Run on CPU-only Windows:** a compatibility guard lets the bundled CUDA-oriented Python runtime start on the tested AMD machine in CPU mode. It does not accelerate inference on AMD GPUs.
+
+The extension also retains the upstream page scanner, selectable translation, outside-bubble text option, multiple API providers, and optional Flux inpainting. Free local translation is **not** implemented in this fork; an API key may be required for your chosen provider.
+
+## Ads in the page list
+
+The built-in image filter catches common ad domains, ad-related page markup, banners, and undersized images, but it cannot identify every advertisement. For ad-heavy reading sites, I recommend using [uBlock Origin Lite on the Chrome Web Store](https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh) alongside this extension. It is a separate, optional extension—not bundled with or affiliated with this project. Check the publisher and official [uBO Lite project page](https://github.com/uBlockOrigin/uBOL-home) before installing. Blocking ads before they reach the page usually gives the manga scanner less junk to inspect; neither layer guarantees perfect filtering.
 
 ## Project Layout
 
@@ -55,7 +62,7 @@ cd manga-translator-extension\backend
 python main.py
 ```
 
-For this portable build, prefer `backend\runtime\python.exe` or the bundled `MangaTranslator\runtime\python.exe` when CUDA/GPU packages are required.
+This source repository does not include the Python runtime or model weights. Obtain those separately from the upstream official release. If using a portable runtime, the launcher detects `backend\runtime\python.exe`; on the tested AMD Windows machine it runs in CPU mode.
 
 Build the extension:
 
@@ -127,6 +134,6 @@ Do not commit API keys, local backend URLs, generated caches, model artifacts, `
 
 ### Changes in this version
 
-The changes since the upstream extension's `v1.0.1` release include Simplified and Traditional Chinese targets, automatic source-language selection, DeepSeek image support, private text-region cropping, ad-image filtering, cross-page OCR context and batched translation, translation failure handling, and persistent per-site auto-translation after page reload. The backend was also adapted to run on CPU-only Windows systems. See the Git history for the exact changes.
+The changes since the upstream extension's `v1.0.1` release include Simplified and Traditional Chinese targets, automatic source-language selection, DeepSeek image-input handling, text-region cropping, ad-image filtering, cross-page OCR context and batched translation, translation failure handling, and persistent per-site auto-translation after page reload. The backend was also adapted to run on CPU-only Windows systems. See the Git history for the exact changes.
 
 The Python runtime, downloaded model weights, generated browser build, caches, and personal API credentials are not part of this source repository. Their licenses and distribution terms must be checked separately before shipping binary release assets.
